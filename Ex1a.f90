@@ -1,75 +1,83 @@
-program dft_main
+program dft
    implicit none
+   
+   ! Define precision for real numbers 
    integer, parameter :: dp = selected_real_kind(15, 300)
+   ! Constants
+   real(dp), parameter :: pi = 4.0_dp * atan(1.0_dp), two_pi = 2.0_dp * pi
+   ! Signal parameters
+   integer, parameter :: N = 1000 ! Number of samples
+   real(dp), parameter :: period = 5.0_dp, amp = 1.0_dp  ! Wave properties
    
-   ! Parameters for the DFT and sine wave
-   integer, parameter :: N = 1000
-   real(dp), parameter :: period = 5.0_dp, amp = 1.0_dp
+   integer :: ios  ! For I/O status
+   character(len=100) :: output_prefix = "sine_wave"
    
-   real(dp) :: dt, t, two_pi
-   integer :: i, j, ios
-   
-   ! Arrays for the time domain signal and its DFT result
+   ! Arrays for time domain signal and frequency domain result
    complex(dp), dimension(0:N-1) :: signal, dft_result
-   ! DFT matrix: each element is the Nth root of unity raised to (j*k)
-   complex(dp), dimension(0:N-1,0:N-1) :: dftMatrix
-   complex(dp) :: W
+   
+   call generate_signal() ! Create sine wave
+   call calculate_dft()  ! Perform DFT
+   call output_results()  ! Write results to file
 
-   ! Open CSV files for output with error handling
-   open(unit=10, file="data.csv", status="replace", action="write", iostat=ios)
-   if (ios /= 0) then
-       print *, "Error: Could not open data.csv for writing."
-       error stop
-   end if
+contains
 
-   open(unit=20, file="dft.csv", status="replace", action="write", iostat=ios)
-   if (ios /= 0) then
-       print *, "Error: Could not open dft.csv for writing."
-       error stop
-   end if
-
-   ! Write header lines for CSV files
-   write(10, '(A)') "time,real,imaginary"
-   write(20, '(A)') "index,real,imaginary"
-
-   ! Calculate 2*pi 
-   two_pi = 2.0_dp * (4.0_dp * atan(1.0_dp))
-
-   ! Calculate time step so that data spans 5 periods
-   dt = 5.0_dp * period / real(N, dp)
-
-   ! Generate the sine wave data
-   do i = 0, N-1
-       t = real(i, dp) * dt
-       signal(i) = cmplx(amp * sin(two_pi * t / period), 0.0_dp, kind=dp)
-       write(10, '(F12.5, ",", ES12.5, ",", ES12.5)') t, real(signal(i)), aimag(signal(i))
-   end do
-
-   ! Define the primitive Nth root of unity for the forward DFT
-   W = exp(cmplx(0.0_dp, two_pi/real(N, dp), kind=dp))
-
-   ! Build the DFT matrix
-   do j = 0, N-1
+   subroutine generate_signal()
+       real(dp) :: dt = 5.0_dp * period / real(N, dp)  ! Time step
+       integer :: i
+       real(dp) :: t
+       character(len=100) :: filename
+       
+       ! Generate sine wave samples
        do i = 0, N-1
-           dftMatrix(j, i) = W ** (j * i)
+           t = real(i, dp) * dt
+           signal(i) = cmplx(amp * sin(two_pi * t / period), 0.0_dp, kind=dp)
        end do
-   end do
+       
+       ! Write time domain signal to CSV file
+       filename = trim(output_prefix) // "_data.csv"
+       open(unit=10, file=filename, status="replace", action="write", iostat=ios)
+       if (ios /= 0) stop "Error: Could not open file for writing."
+       
+       write(10, '(A)') "time,real,imaginary"  ! CSV header
+       do i = 0, N-1
+           t = real(i, dp) * dt
+           write(10, '(F12.5,",",ES12.5,",",ES12.5)') t, real(signal(i)), aimag(signal(i))
+       end do
+       
+       close(10)
+   end subroutine generate_signal
+   
+   subroutine calculate_dft()
+       complex(dp) :: W                        ! Nth root of unity
+       integer :: i, j
+       
+       ! Define the principal Nth root of unity for DFT
+       W = exp(cmplx(0.0_dp, two_pi/real(N, dp), kind=dp))
+       
+       ! Direct implementation of DFT formula
+       dft_result = 0.0_dp
+       do j = 0, N-1  ! For each frequency bin
+           do i = 0, N-1  ! For each time sample
+               dft_result(j) = dft_result(j) + signal(i) * W ** (i * j)
+           end do
+       end do
+   end subroutine calculate_dft
+   
+   subroutine output_results()
+       integer :: j
+       character(len=100) :: filename
+       
+       ! Write DFT results to CSV file
+       filename = trim(output_prefix) // "_dft.csv"
+       open(unit=20, file=filename, status="replace", action="write", iostat=ios)
+       if (ios /= 0) stop "Error: Could not open file for writing."
+       
+       write(20, '(A)') "index,real,imaginary"  ! CSV header
+       do j = 0, N-1  ! Write each frequency component
+           write(20, '(I6,",",ES12.5,",",ES12.5)') j, real(dft_result(j)), aimag(dft_result(j))
+       end do
+       
+       close(20)
+   end subroutine output_results
 
-   ! Compute the DFT 
-   dft_result = matmul(dftMatrix, signal)
-
-   ! Write the DFT output (index, real, and imaginary parts) to dft.csv
-   do j = 0, N-1
-       write(20, '(I6, ",", ES12.5, ",", ES12.5)') j, real(dft_result(j)), aimag(dft_result(j))
-   end do
-
-   close(10)
-   close(20)
-
-   print *, "Output written to data.csv and dft.csv"
-end program dft_main
-
-
- 
- 
-  
+end program dft
