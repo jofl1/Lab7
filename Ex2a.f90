@@ -11,12 +11,11 @@ program sobel_edge_detection
     real(dp), allocatable :: grad_x(:,:), grad_y(:,:), gradient(:,:)
     integer :: width, height, maxval, i, j
     
-    ! Sobel operators (3x3 convolution kernels)
+    ! Sobel operators 
     integer :: Gx(3,3) = reshape((/ -1, 0, 1, -2, 0, 2, -1, 0, 1 /), shape(Gx))
     integer :: Gy(3,3) = reshape((/ 1, 2, 1, 0, 0, 0, -1, -2, -1 /), shape(Gy))
     
     ! Read the PGM image file
-    print *, "Reading image file:", input_file
     call read_pgm(input_file, input_image, width, height, maxval)
     print *, "Image dimensions:", width, "x", height, "with max value:", maxval
     
@@ -26,8 +25,7 @@ program sobel_edge_detection
     grad_y = 0.0_dp
     gradient = 0.0_dp
     
-    ! Apply Sobel operator in x-direction
-    print *, "Applying Sobel filter in x-direction..."
+    ! Apply Sobel operator in x direction
     do j = 2, height-1
         do i = 2, width-1
             grad_x(j,i) = &
@@ -37,8 +35,7 @@ program sobel_edge_detection
         end do
     end do
     
-    ! Apply Sobel operator in y-direction
-    print *, "Applying Sobel filter in y-direction..."
+    ! Apply Sobel operator in y direction
     do j = 2, height-1
         do i = 2, width-1
             grad_y(j,i) = &
@@ -49,7 +46,6 @@ program sobel_edge_detection
     end do
     
     ! Calculate the gradient magnitude
-    print *, "Calculating gradient magnitude..."
     do j = 1, height
         do i = 1, width
             ! Use the square root of the sum of squares for the gradient magnitude
@@ -57,8 +53,7 @@ program sobel_edge_detection
         end do
     end do
     
-    ! Apply clipping to the gradient values (instead of normalization)
-    print *, "Clipping gradient values..."
+    ! Apply clipping to the gradient values 
     do j = 1, height
         do i = 1, width
             ! Clip the gradient values to the range [0, maxval]
