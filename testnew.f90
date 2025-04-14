@@ -1,402 +1,367 @@
-program dft
+program edge_detection
+    use pgm_utils 
     implicit none
-    integer, parameter :: dp = selected_real_kind(15, 300)
-
-    ! Constants
-    real(dp), parameter :: pi = 4.0_dp * atan(1.0_dp), two_pi = 2.0_dp * pi
-
-    ! Signal parameters 
-    integer, parameter :: N = 1000          ! Number of samples
-    real(dp), parameter :: dt = 0.01_dp      ! Time step
-    real(dp), parameter :: amp = 1.0_dp      ! Signal amplitude
-
-    ! Window parameters
-    integer :: window_type = 0               ! Window type
-    real(dp), parameter :: gaussian_width = 0.3_dp ! Width for the Gaussian window
-
-    ! Leakage control parameters
-    integer :: cycle_numerator = 7, cycle_denominator = 2
-    real(dp) :: period = 0.0_dp             ! Sine wave period
-    real(dp) :: fractional_cycles = 0.0_dp  ! Number of cycles in window
-    logical :: auto_period = .true.          ! Flag: auto calculate period if true
-
-    integer :: signal_type = 0
-    real(dp) :: pulse_width = 0.0_dp      ! For rectangle and triangle pulses 
-    real(dp) :: sigma_width = 0.0_dp      ! For Gaussian pulse 
-
-    ! Arrays for signal processing
-    complex(dp), dimension(0:N-1) :: signal         ! Time domain signal
-    complex(dp), dimension(0:N-1) :: dft_result     ! Frequency domain DFT result
-    real(dp), dimension(0:N-1)    :: window_function  ! Window function values
-
-    integer :: ios, leakage_choice       ! I/O status, user choice
-    character(len=100) :: output_prefix     ! Prefix for output file names
-
-    ! User Input and config
-    write(*,*) "DFT Spectral Leakage Analysis Tool"
-
-    ! Get Signal Type 
-    write(*,*) "Select signal type:"
-    write(*,*) " 0 - Sine wave (uses period/leakage settings)"
-    write(*,*) " 1 - Rectangular pulse"
-    write(*,*) " 2 - Triangle pulse"
-    write(*,*) " 3 - Gaussian pulse"
-    read(*,*, iostat=ios) signal_type
-    ! Input Validation 
-    if (ios /= 0) stop "Error: Invalid numeric input for signal type."
-    if (signal_type < 0 .or. signal_type > 3) then
-        write(*,*) "Error: Signal type must be between 0 and 3."
-        stop 1
-    end if
-
-    ! Branch based on signal type
-    if (signal_type == 0) then
-        ! For sine wave only ask about windowing and period
-        write(*,*) "Window types: 0 - none, 1 - triangle, 2 - cosine(Hann), 3 - gaussian"
-        write(*,*) "Enter window type (0-3): "
-        read(*,*, iostat=ios) window_type
-        ! Input Validation 
-        if (ios /= 0) stop "Error: Invalid numeric input for window type."
-        if (window_type < 0 .or. window_type > 3) then
-            write(*,*) "Error: Window type must be between 0 and 3."
-            stop 2
-        end if
-
-        ! Get Leakage Configuration 
-        write(*,*) "Sine Wave Spectral leakage configurations:"
-        write(*,*) " 1 - Maximally incommensurate (e.g., 7.5 cycles)"
-        write(*,*) " 2 - Moderately incommensurate (e.g., 7.25 cycles)"
-        write(*,*) " 3 - Commensurate (e.g., 7.0 cycles)"
-        write(*,*) " 4 - Custom period value"
-        write(*,*) "Enter configuration (1-4): "
-        read(*,*, iostat=ios) leakage_choice
-        ! Input Validation
-        if (ios /= 0) stop "Error: Invalid numeric input for leakage configuration."
-        if (leakage_choice < 1 .or. leakage_choice > 4) then
-            write(*,*) "Error: Leakage configuration choice must be between 1 and 4."
-            stop 3
-        end if
-
-        select case(leakage_choice)
-        case(1)
-            cycle_numerator = 15 ; cycle_denominator = 2  ! 7.5 cycles
-        case(2)
-            cycle_numerator = 29 ; cycle_denominator = 4  ! 7.25 cycles
-        case(3)
-            cycle_numerator = 7  ; cycle_denominator = 1  ! 7.0 cycles
-        case(4)
-            auto_period = .false.
-            write(*,*) "Enter custom period value (must be > 0): "
-            read(*,*, iostat=ios) period
-            ! Input Validation 
-            if (ios /= 0) stop "Error: Invalid numeric input for period."
-            if (period <= 0.0_dp) then
-                write(*,*) "Error: Custom period must be positive."
-                stop 4
-            end if
-        end select
-
-        ! Calculate period automatically if needed 
-        if (auto_period) then
-            fractional_cycles = real(cycle_numerator, dp) / real(cycle_denominator, dp)
-            period = real(N, dp) * dt / fractional_cycles
-            write(*,*) "Configured for", fractional_cycles, "cycles in window"
-            write(*,*) "Calculated period:", period
-            if (period <= 0.0_dp) stop "Error: Calculated period is not positive. Check N, dt, cycles."
-        end if
-    else
-        ! For pulse signals no window is needed
-        window_type = 0
+    
+    ! External declarations for FFTW library
+    integer, parameter :: i64 = selected_int_kind(18) 
+    
+    ! Interface block for external FFTW procedures
+    interface
+        subroutine dfftw_plan_dft_r2c_2d(plan, n0, n1, in, out, flags)
+            import i64, dp 
+            integer(kind=i64) :: plan 
+            integer :: n0, n1, flags
+            real(dp) :: in(*)      
+            complex(dp) :: out(*)   
+        end subroutine
         
-        ! Get parameters for pulse types
-        select case(signal_type)
-        case(1,2) ! Rectangular or Triangle pulse
-            write(*,*) "Enter pulse width L (must be > 0): "
-            read(*,*, iostat=ios) pulse_width
-            ! Input Validation 
-            if (ios /= 0) stop "Error: Invalid input for pulse width."
-            if (pulse_width <= 0.0_dp) then
-                write(*,*) "Error: Pulse width L must be positive."
-                stop 5
-            end if
-        case(3) ! Gaussian pulse
-            write(*,*) "Enter Gaussian pulse width (must be > 0): "
-            read(*,*, iostat=ios) sigma_width
-            ! Input Validation 
-            if (ios /= 0) stop "Error: Invalid numeric input for width."
-            if (sigma_width <= 0.0_dp) then
-                write(*,*) "Error: Gaussian  width must be positive."
-                stop 6
-            end if
-        end select
-    end if
-
-    ! Processing Steps 
-    call update_output_prefix(output_prefix, signal_type, window_type, &
-                              auto_period, cycle_numerator, cycle_denominator, &
-                              period, pulse_width, sigma_width)
-
-    call create_window_function(window_function, N, window_type, output_prefix)
-
-    call generate_signal(signal, N, dt, signal_type, period, pulse_width, sigma_width, output_prefix)
-
-    ! Apply window only for sine wave
-    if (signal_type == 0) then
-         call apply_window(signal, window_function, N)
-    end if
-
-    call calculate_dft(dft_result, signal, N)
-
-    call output_results(dft_result, N, dt, output_prefix)
-
-    write(*,*) "Processing complete. Files saved with prefix: ", trim(output_prefix)
-
-contains
-
-    ! Generates the filename prefix based on configuration
-    subroutine update_output_prefix(output_prefix, signal_type, window_type, &
-                                    auto_period, cycle_numerator, cycle_denominator, &
-                                    period, pulse_width, sigma_width)
-        character(len=*), intent(out) :: output_prefix
-        integer, intent(in) :: signal_type, window_type
-        logical, intent(in) :: auto_period
-        integer, intent(in) :: cycle_numerator, cycle_denominator
-        real(dp), intent(in) :: period, pulse_width, sigma_width
-        character(len=20) :: window_str, cycle_str, signal_str, param_str
-
-        select case(signal_type)
-        case(0); signal_str = "sine"
-        case(1); signal_str = "rect"
-        case(2); signal_str = "tri"
-        case(3); signal_str = "gauss_pulse"
-        case default; signal_str = "unknown"
-        end select
-
-        select case(window_type)
-        case(0); window_str = "none"
-        case(1); window_str = "triangle"
-        case(2); window_str = "cosine"
-        case(3); window_str = "gaussian_win"
-        case default; window_str = "unknown"
-        end select
-
-        if (signal_type == 0) then
-            if (auto_period) then
-                write(cycle_str, '(I0,"_",I0)') cycle_numerator, cycle_denominator
-                param_str = "c" // trim(adjustl(cycle_str))
+        subroutine dfftw_plan_dft_c2r_2d(plan, n0, n1, in, out, flags)
+            import i64, dp
+            integer(kind=i64) :: plan 
+            integer :: n0, n1, flags
+            complex(dp) :: in(*)    
+            real(dp) :: out(*)      
+        end subroutine
+        
+        subroutine dfftw_execute(plan)
+            import i64
+            integer(kind=i64) :: plan 
+        end subroutine
+        
+        subroutine dfftw_destroy_plan(plan)
+            import i64
+            integer(kind=i64) :: plan 
+        end subroutine
+    end interface
+    
+    ! Parameters
+    character(len=*), parameter :: input_file = "clown.pgm"     
+    character(len=*), parameter :: output_file = "clown_edges.pgm"
+    character(len=*), parameter :: blurred_file = "blurred.pgm" 
+    character(len=*), parameter :: deblurred_file = "deblurred.pgm"
+    
+    ! Variables
+    integer, allocatable :: input_image(:,:)   
+    real(dp), allocatable :: result_image(:,:) 
+    integer :: width, height, image_maxval     
+    integer :: method            
+    integer :: mask_radius = 20  
+    character(len=100) :: user_input 
+    logical :: valid_input       
+    integer :: ios               
+    integer :: blur_width = 10   
+    
+    ! Main Program Execution 
+    call read_pgm(input_file, input_image, width, height, image_maxval)
+    
+    ! User Method Selection 
+    valid_input = .false.
+    do while (.not. valid_input)
+        print *, "Please select the image processing method:"
+        print *, "  1: Sobel edge detection (spatial domain)"
+        print *, "  2: High-pass filter edge detection (frequency domain using FFT)"
+        print *, "  3: Deblur image (deconvolution using FFT)"
+        write (*, '(A)', advance='no') "Enter choice (1, 2, or 3): " 
+        read (*, '(A)') user_input 
+        read(user_input, *, iostat=ios) method
+        if (ios == 0) then 
+            if (method >= 1 .and. method <= 3) then
+                valid_input = .true.; print *, "Method selected: ", method 
             else
-                write(cycle_str, '(G10.3)') period
-                param_str = "p" // trim(adjustl(cycle_str))
+                print *, "-> Invalid choice. Please enter 1, 2, or 3."
             end if
-            output_prefix = trim(signal_str) // "_" // trim(param_str) // "_w" // trim(window_str)
         else
-            if (signal_type == 1 .or. signal_type == 2) then
-                write(cycle_str, '(G10.3)') pulse_width
-                param_str = "_L" // trim(adjustl(cycle_str))
-            else if (signal_type == 3) then
-                write(cycle_str, '(G10.3)') sigma_width
-                param_str = "_sigma" // trim(adjustl(cycle_str))
-            else
-                 param_str = ""
-            end if
-            output_prefix = trim(signal_str) // trim(param_str) // "_w" // trim(window_str)
+            print *, "-> Invalid input. Please enter a number (1, 2, or 3)."
         end if
-    end subroutine update_output_prefix
-
-    ! Computes the specified window function values
-    subroutine create_window_function(window_function, n_samples, window_type, output_prefix)
-        integer, intent(in) :: n_samples, window_type
-        real(dp), dimension(0:n_samples-1), intent(out) :: window_function
-        character(len=*), intent(in) :: output_prefix
-        integer :: i, file_unit, ios
-        real(dp) :: x, center_x
-        character(len=120) :: filename
-
-        do i = 0, n_samples-1
-            if (n_samples > 1) then
-                 x = real(i, dp) / real(n_samples-1, dp)
+    end do
+    
+    ! Get Method specific parameters 
+    if (method == 2) then
+        valid_input = .false.
+        do while (.not. valid_input)
+            print *, ""
+            write (*, '(A, I0, A)', advance='no') "Enter mask radius for high-pass filter: " 
+            read (*, '(A)') user_input
+            if (len_trim(user_input) == 0) then 
+                mask_radius = 20; valid_input = .true.; print *, "Using default mask radius: ", mask_radius 
             else
-                 x = 0.5_dp
+                read(user_input, *, iostat=ios) mask_radius
+                if (ios == 0 .and. mask_radius > 0) then 
+                    valid_input = .true.; print *, "Mask radius set to: ", mask_radius 
+                else if (ios /= 0) then
+                     print *, "-> Invalid input. Please enter a positive number or press Enter for default."
+                else 
+                     print *, "-> Invalid radius. Please enter a positive number."
+                end if
             end if
-
-            select case(window_type)
-            case(0)
-                window_function(i) = 1.0_dp
-            case(1)
-                window_function(i) = 1.0_dp - 2.0_dp * abs(x - 0.5_dp)
-            case(2)
-                window_function(i) = 0.5_dp * (1.0_dp - cos(two_pi * x))
-            case(3)
-                center_x = 0.5_dp
-                window_function(i) = exp(-((x - center_x)**2) / (2.0_dp * gaussian_width**2))
-            case default
-                window_function(i) = 1.0_dp
-            end select
         end do
-
-        filename = trim(output_prefix)//"_window.csv"
-        open(newunit=file_unit, file=filename, status="replace", action="write", iostat=ios)
-        if (ios /= 0) stop "Error opening window file."
-        write(file_unit, '(A)') "index,x,window_value"
-        do i = 0, n_samples-1
-             if (n_samples > 1) then
-                 x = real(i, dp) / real(n_samples-1, dp)
-             else
-                 x = 0.5_dp
-             end if
-            write(file_unit, '(I0,",",F12.5,",",F12.5)') i, x, window_function(i)
-        end do
-        close(file_unit)
-    end subroutine create_window_function
-
-    ! Generates the specified time domain signal without window
-    subroutine generate_signal(signal, n_samples, dt_step, signal_type, &
-                               period, pulse_width, sigma_width, output_prefix)
-        integer, intent(in) :: n_samples, signal_type                       
-        complex(dp), dimension(0:n_samples-1), intent(out) :: signal
-        real(dp), intent(in) :: dt_step, period, pulse_width, sigma_width
-        character(len=*), intent(in) :: output_prefix
-        integer :: i, file_unit, ios
-        real(dp) :: t, center_time, value
-        character(len=120) :: filename
-
-        center_time = (real(n_samples-1, dp) * dt_step) / 2.0_dp
-        signal = cmplx(0.0_dp, 0.0_dp, kind=dp)
-
-        select case(signal_type)
-        case(0) ! Sine wave
-             if (period <= 0.0_dp) stop "Error in generate_signal: Sine wave period must be positive."
-            do i = 0, n_samples-1
-                t = real(i, dp) * dt_step
-                signal(i) = cmplx(amp * sin(two_pi * t / period), 0.0_dp, kind=dp)
-            end do
-        case(1) ! Rectangular pulse
-            do i = 0, n_samples-1
-                t = real(i, dp) * dt_step
-                if (abs(t - center_time) <= pulse_width / 2.0_dp) then
-                    signal(i) = cmplx(amp, 0.0_dp, kind=dp)
-                else
-                    signal(i) = cmplx(0.0_dp, 0.0_dp, kind=dp)
+    end if
+    
+    if (method == 3) then
+        valid_input = .false.
+        do while (.not. valid_input)
+            print *, ""
+            write (*, '(A, I0, A)', advance='no') "Enter width of the horizontal motion blur: "
+            read (*, '(A)') user_input
+            if (len_trim(user_input) == 0) then 
+                blur_width = 10; valid_input = .true.; print *, "Using default blur width: ", blur_width 
+            else
+                read(user_input, *, iostat=ios) blur_width
+                if (ios == 0 .and. blur_width > 0 .and. blur_width <= width) then 
+                    valid_input = .true.; print *, "Blur width set to: ", blur_width 
+                else if (ios /= 0) then
+                     print *, "-> Invalid input. Please enter a positive number or press Enter for default."
+                else if (blur_width <= 0) then
+                     print *, "-> Invalid width. Please enter a positive number."
+                else 
+                     print *, "-> Invalid width. Blur width cannot exceed image width (", width, ")."
                 end if
-            end do
-        case(2) ! Symmetric triangle pulse
-            do i = 0, n_samples-1
-                t = real(i, dp) * dt_step
-                if (abs(t - center_time) <= pulse_width / 2.0_dp) then
-                    value = amp * (1.0_dp - 2.0_dp * abs(t - center_time) / pulse_width)
-                    signal(i) = cmplx(value, 0.0_dp, kind=dp)
-                else
-                    signal(i) = cmplx(0.0_dp, 0.0_dp, kind=dp)
-                end if
-            end do
-        case(3) ! Gaussian pulse
-             if (sigma_width <= 0.0_dp) stop "Error in generate_signal: Gaussian sigma must be positive."
-            do i = 0, n_samples-1
-                t = real(i, dp) * dt_step
-                value = amp * exp(-((t - center_time)**2) / (2.0_dp * sigma_width**2))
-                signal(i) = cmplx(value, 0.0_dp, kind=dp)
-            end do
-        case default
-             write(*,*) "Warning: Unknown signal type in generate_signal, defaulting to sine wave."
-             if (period <= 0.0_dp) stop "Error in generate_signal: Sine wave period must be positive for default."
-             do i = 0, n_samples-1
-                 t = real(i, dp) * dt_step
-                 signal(i) = cmplx(amp * sin(two_pi * t / period), 0.0_dp, kind=dp)
-             end do
-        end select
-
-        filename = trim(output_prefix)//"_signal_raw.csv"
-        open(newunit=file_unit, file=filename, status="replace", action="write", iostat=ios)
-        if (ios /= 0) stop "Error opening raw signal file."
-        write(file_unit, '(A)') "time,real,imaginary,signal_magnitude"
-        do i = 0, n_samples-1
-            t = real(i, dp) * dt_step
-            write(file_unit, '(F15.8,",",ES18.8,",",ES18.8,",",ES18.8)') &
-                t, real(signal(i)), aimag(signal(i)), abs(signal(i))
+            end if
         end do
-        close(file_unit)
-    end subroutine generate_signal
-
-    ! Applies the window function 
-    subroutine apply_window(signal_data, window_vals, n_samples)
-        integer, intent(in) :: n_samples
-        complex(dp), dimension(0:n_samples-1), intent(inout) :: signal_data
-        real(dp), dimension(0:n_samples-1), intent(in) :: window_vals
         
-        ! Apply window using element multiplication
-        signal_data = signal_data * window_vals
-    end subroutine apply_window
+        if (allocated(input_image)) deallocate(input_image)
+        print *, ""; print *, "Reading blurred image: ", blurred_file
+        call read_pgm(blurred_file, input_image, width, height, image_maxval) 
+        print *, "Blurred image dimensions:", width, "x", height, " Max value:", image_maxval
+    end if
+    
+    ! Allocate result image, initialising to zero 
+    allocate(result_image(height, width), stat=ios, source=0.0_dp) 
+    if (ios /= 0) then
+        print *, "Error: Could not allocate memory for result image."; stop 1 
+    end if
+    
+    ! Call selected processing method
+    select case(method)
+        case(1) 
+            print *, "Using Sobel operator method"
+            call sobel_method(input_image, result_image, width, height, image_maxval)
+            print *, "Writing edge-detected image to:", output_file
+            call write_pgm(output_file, result_image, width, height, image_maxval)
+        case(2) 
+            print *, "Using FFT-based high-pass filter method with mask radius:", mask_radius
+            call fft_method(input_image, result_image, width, height, image_maxval, mask_radius)
+            print *, "Writing edge-detected image to:", output_file
+            call write_pgm(output_file, result_image, width, height, image_maxval)
+        case(3) 
+            print *, "Using deblurring method with blur width:", blur_width
+            call deblur_method(input_image, result_image, width, height, image_maxval, blur_width)
+            print *, "Writing deblurred image to:", deblurred_file
+            call write_pgm(deblurred_file, result_image, width, height, image_maxval)
+        case default
+            print *, "Error: Invalid method selected:", method; stop 2 
+    end select
+    
+    ! Cleanup
+    if (allocated(input_image)) deallocate(input_image)
+    if (allocated(result_image)) deallocate(result_image)
 
-    ! Calculates the DFT 
-    subroutine calculate_dft(dft_result, signal, n_samples)
-        integer, intent(in) :: n_samples
-        complex(dp), dimension(0:n_samples-1), intent(out) :: dft_result
-        complex(dp), dimension(0:n_samples-1), intent(in) :: signal
-        complex(dp) :: W, W_power_j
+contains 
+
+    ! Sobel edge detection subroutine
+    subroutine sobel_method(input_image, gradient, width, height, image_maxval)
+        integer, intent(in) :: input_image(:,:), width, height, image_maxval 
+        real(dp), intent(out) :: gradient(:,:) 
+        
+        real(dp), allocatable :: grad_x(:,:), grad_y(:,:) 
         integer :: i, j
-
-        if (n_samples <= 0) then
-           dft_result = cmplx(0.0_dp, 0.0_dp, kind=dp)
-           return
-        end if
-
-        W = exp(cmplx(0.0_dp, two_pi / real(n_samples, dp), kind=dp))
-        dft_result = (0.0_dp, 0.0_dp)
-
-        do j = 0, n_samples-1
-            W_power_j = W**j
-            dft_result(j) = signal(0)
-            do i = 1, n_samples-1
-                 dft_result(j) = dft_result(j) + signal(i) * (W_power_j ** i)
+        integer, parameter :: Gx(3,3) = reshape((/ -1, 0, 1, -2, 0, 2, -1, 0, 1 /), shape(Gx))
+        integer, parameter :: Gy(3,3) = reshape((/  1, 2, 1,  0, 0, 0, -1,-2,-1 /), shape(Gy))
+        
+        ! Allocate and initialise gradient components to zero 
+        allocate(grad_x(height, width), grad_y(height, width), source=0.0_dp)
+        
+        ! Apply Sobel operators
+        do j = 2, height-1 
+            do i = 2, width-1
+                grad_x(j,i) = sum( real(Gx(:,:), dp) * real(input_image(j-1:j+1, i-1:i+1), dp) )
+                grad_y(j,i) = sum( real(Gy(:,:), dp) * real(input_image(j-1:j+1, i-1:i+1), dp) )
             end do
         end do
-    end subroutine calculate_dft
+        
+        gradient = sqrt(grad_x**2 + grad_y**2)
+        
+        ! Clip result
+        where (gradient < 0.0_dp) gradient = 0.0_dp
+        where (gradient > real(image_maxval, dp)) gradient = real(image_maxval, dp) 
+        
+        deallocate(grad_x, grad_y)
+    end subroutine sobel_method
 
-    ! Outputs the DFT results and magnitude spectrum to CSV files
-    subroutine output_results(dft_result, n_samples, dt_step, output_prefix)
-        integer, intent(in) :: n_samples
-        complex(dp), dimension(0:n_samples-1), intent(in) :: dft_result
-        real(dp), intent(in) :: dt_step
-        character(len=*), intent(in) :: output_prefix
-        integer :: j, dft_unit, mag_unit, ios
-        real(dp) :: freq, magnitude, fs
-        character(len=120) :: filename
+    ! FFT High pass filter edge detection subroutine
+    subroutine fft_method(input_image, gradient, width, height, image_maxval, mask_radius)
+        implicit none
+    
+        integer, intent(in)     :: input_image(:,:), width, height, image_maxval, mask_radius 
+        real(dp), intent(out) :: gradient(:,:) 
+    
+        integer, parameter :: FFTW_ESTIMATE = 64 
+        real(dp),    allocatable :: image_real(:,:)    
+        complex(dp), allocatable :: image_complex(:,:) 
+        integer(i64) :: plan_forward, plan_backward
+        integer :: i, j, nx, ny 
+        real(dp) :: dist_sq, max_abs_value 
+        integer(i64) :: zeroed_freqs, total_freqs 
+        real(dp) :: grad_val 
+    
+        ! Allocate and initialise FFT arrays 
+        allocate(image_real(height, width), source=0.0_dp)
+        allocate(image_complex(height, (width/2)+1), source=cmplx(0.0_dp, 0.0_dp, kind=dp))
+    
+        image_real = real(input_image, kind=dp)
+    
+        ! Create FFT Plans
+        call dfftw_plan_dft_r2c_2d(plan_forward,  height, width,  image_real, image_complex, FFTW_ESTIMATE)
+        call dfftw_plan_dft_c2r_2d(plan_backward, height, width,  image_complex, image_real, FFTW_ESTIMATE)
+        if (plan_forward == 0_i64 .or. plan_backward == 0_i64) then
+            print *, "Error: Failed to create FFTW plans in fft_method."; stop 3 
+        end if
 
-        if (n_samples <= 0) return
-        if (dt_step <= 0.0_dp) stop "Error in output_results: dt_step must be positive."
-
-        fs = 1.0_dp / dt_step
-
-        filename = trim(output_prefix)//"_dft.csv"
-        open(newunit=dft_unit, file=filename, status="replace", action="write", iostat=ios)
-        if (ios /= 0) stop "Error opening DFT file."
-        write(dft_unit, '(A)') "index,frequency,magnitude,real,imaginary"
-        do j = 0, n_samples-1
-            if (j <= n_samples/2) then
-                freq = real(j, dp) * fs / real(n_samples, dp)
-            else
-                freq = real(j - n_samples, dp) * fs / real(n_samples, dp)
-            end if
-            magnitude = abs(dft_result(j))
-            write(dft_unit, '(I0,",",F15.8,",",ES18.8,",",ES18.8,",",ES18.8)') &
-                j, freq, magnitude, real(dft_result(j)), aimag(dft_result(j))
+        ! Execute Forward FFT
+        call dfftw_execute(plan_forward)
+        
+        ! Apply high pass filter in frequency domain
+        ! Zero out low-frequency components within the specified radius around the DC component
+        zeroed_freqs = 0_i64
+        total_freqs  = int(height, kind=i64) * int((width/2)+1, kind=i64)
+        do j = 1, height 
+            ! Calculate the effective y frequency index (ny) considering wrap around
+            ny = j - 1; if (ny > height/2) ny = ny - height 
+            do i = 1, (width/2)+1 
+                nx = i - 1; dist_sq = real(nx*nx + ny*ny, dp) 
+                ! High-pass filter - Zero out frequencies inside the radius
+                if (dist_sq <= real(mask_radius, dp)**2) then 
+                    image_complex(j,i) = cmplx(0.0_dp, 0.0_dp, kind=dp) 
+                    zeroed_freqs = zeroed_freqs + 1_i64
+                end if
+            end do
         end do
-        close(dft_unit)
+        print *, "FFT filter: Zeroed ", zeroed_freqs, " out of ", total_freqs, " frequency components."
 
-        filename = trim(output_prefix)//"_magnitude.csv"
-        open(newunit=mag_unit, file=filename, status="replace", action="write", iostat=ios)
-        if (ios /= 0) stop "Error opening magnitude file."
-        write(mag_unit, '(A)') "frequency,magnitude"
-        do j = 0, n_samples-1
-            if (j <= n_samples/2) then
-                freq = real(j, dp) * fs / real(n_samples, dp)
-            else
-                freq = real(j - n_samples, dp) * fs / real(n_samples, dp)
-            end if
-            magnitude = abs(dft_result(j))
-            write(mag_unit, '(F15.8,",",ES18.8)') freq, magnitude
+        ! Execute Backward FFT
+        call dfftw_execute(plan_backward)
+
+        ! Normalise and Finalise Output
+        image_real = image_real / real(width*height, dp) 
+        max_abs_value = 0.0_dp 
+        do j = 1, height
+            do i = 1, width
+                grad_val = abs(image_real(j,i))
+                ! Check for NaN or Inf manually (value /= value is true for NaN)
+                if ((grad_val /= grad_val) .or. (abs(grad_val) >= huge(grad_val))) then
+                    gradient(j,i) = 0.0_dp
+                else
+                    ! Clip valid numbers
+                    if (grad_val > max_abs_value) max_abs_value = grad_val
+                    if (grad_val > real(image_maxval, dp)) then
+                       gradient(j,i) = real(image_maxval, dp) 
+                    else if (grad_val < 0.0_dp) then 
+                       gradient(j,i) = 0.0_dp
+                    else
+                       gradient(j,i) = grad_val
+                    end if
+                end if
+            end do
         end do
-        close(mag_unit)
-    end subroutine output_results
+        print *, "Gradient values clipped to [0, ", image_maxval, "]." 
 
-end program dft
+        call dfftw_destroy_plan(plan_forward); call dfftw_destroy_plan(plan_backward)
+        deallocate(image_real); deallocate(image_complex)
+    end subroutine fft_method
+
+    ! FFT deblurring subroutine
+    subroutine deblur_method(input_image, output_image, width, height, image_maxval, blur_width)
+        implicit none
+    
+        integer, intent(in)     :: input_image(:,:), width, height, image_maxval, blur_width 
+        real(dp), intent(out) :: output_image(:,:) 
+    
+        integer, parameter :: FFTW_ESTIMATE = 64
+        real(dp),    allocatable :: image_real(:,:), blur_real(:,:)
+        complex(dp), allocatable :: image_complex(:,:), blur_complex(:,:)
+        integer(i64) :: plan_forward_image, plan_backward_image, plan_forward_blur
+        integer :: i, j
+        real(dp) :: max_value_out, min_value_out, magnitude_blur       
+        real(dp), parameter :: eps = 1.0e-10_dp 
+        complex(dp) :: H 
+        real(dp) :: pixel_val
+
+        ! Allocate and initialize FFT arrays 
+        allocate(image_real(height, width), source=0.0_dp)
+        allocate(image_complex(height, (width/2)+1), source=cmplx(0.0_dp, 0.0_dp, kind=dp))
+        allocate(blur_real(height, width), source=0.0_dp)
+        allocate(blur_complex(height, (width/2)+1), source=cmplx(0.0_dp, 0.0_dp, kind=dp))
+    
+        image_real = real(input_image, kind=dp)
+    
+        ! Create Blur Function - horizontal motion blur at top left
+        if (blur_width > 0 .and. blur_width <= width) then
+            blur_real(1, 1:blur_width) = 1.0_dp / real(blur_width, dp) 
+        else
+            print *, "Warning: Invalid blur_width (", blur_width, ") in deblur_method. Using width=1."
+            blur_real(1, 1) = 1.0_dp 
+        end if
+        
+        ! Create FFT Plans
+        call dfftw_plan_dft_r2c_2d(plan_forward_image, height, width, image_real, image_complex, FFTW_ESTIMATE)
+        call dfftw_plan_dft_r2c_2d(plan_forward_blur, height, width, blur_real, blur_complex, FFTW_ESTIMATE)
+        call dfftw_plan_dft_c2r_2d(plan_backward_image, height, width, image_complex, image_real, FFTW_ESTIMATE)
+        if (plan_forward_image == 0_i64 .or. plan_forward_blur == 0_i64 .or. plan_backward_image == 0_i64) then
+             print *, "Error: Failed to create FFTW plans in deblur_method."; stop 4 
+        end if
+
+        ! Execute Forward FFTs
+        call dfftw_execute(plan_forward_image)
+        call dfftw_execute(plan_forward_blur)
+
+        ! Deconvolve in frequency domain deblurred = Blurred / Blur_PSF
+        ! Includes check for near zero magnitude in Blur_PSF to avoid noise amplification
+        do j = 1, height
+            do i = 1, (width/2)+1
+                H = blur_complex(j,i) 
+                ! Reverted back to manual calculation for complex magnitude
+                magnitude_blur = sqrt(real(H, dp)**2 + aimag(H)**2) 
+                
+                if (magnitude_blur > eps) then
+                    image_complex(j,i) = image_complex(j,i) / H
+                else
+                    ! Avoid division by zero/small number
+                    image_complex(j,i) = cmplx(0.0_dp, 0.0_dp, kind=dp) 
+                end if
+            end do
+        end do
+    
+        ! Execute Backward FFT
+        call dfftw_execute(plan_backward_image)
+
+        ! Normalise and Finalise Output
+        image_real = image_real / real(width*height, dp) 
+        min_value_out = minval(image_real); max_value_out = maxval(image_real)
+        print *, "After inverse FFT (raw deblurred) - Min:", min_value_out, "Max:", max_value_out
+        print *, "Clipping deblurred image to [0, ", image_maxval, "]" 
+        do j = 1, height
+            do i = 1, width
+                pixel_val = image_real(j,i) 
+                ! Check for NaN or Inf manually (value /= value is true for NaN)
+                if ((pixel_val /= pixel_val) .or. (abs(pixel_val) >= huge(pixel_val))) then
+                    output_image(j,i) = 0.0_dp 
+                else 
+                    ! Clip valid numbers
+                    if (pixel_val < 0.0_dp) then 
+                        output_image(j,i) = 0.0_dp 
+                    else if (pixel_val > real(image_maxval, dp)) then 
+                        output_image(j,i) = real(image_maxval, dp) 
+                    else
+                        output_image(j,i) = pixel_val 
+                    end if
+                end if
+            end do
+        end do
+    
+        call dfftw_destroy_plan(plan_forward_image)
+        call dfftw_destroy_plan(plan_forward_blur)
+        call dfftw_destroy_plan(plan_backward_image)
+        deallocate(image_real, image_complex, blur_real, blur_complex)
+    end subroutine deblur_method
+    
+end program edge_detection
